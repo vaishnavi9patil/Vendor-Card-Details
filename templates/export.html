@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Export · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Export vendors</h1>
+            <p>Download your vendors for Excel or to import into the CRM.</p>
+        </div>
+    </div>
+
+    <form class="panel" method="GET" id="export-form">
+        <div class="panel-body">
+            <p class="section-title">Which vendors?</p>
+            <p class="section-sub">Only reviewed vendors are recommended for the CRM.</p>
+            {% set reviewed_default = app_settings.export_reviewed_only == '1' %}
+            <label class="option-row">
+                <input type="radio" name="status" value="" {{ 'checked' if not reviewed_default }}>
+                <span><strong>All vendors</strong><span class="muted small">{{ counts.all }} vendors</span></span>
+            </label>
+            <label class="option-row">
+                <input type="radio" name="status" value="reviewed" {{ 'checked' if reviewed_default }}>
+                <span><strong>Reviewed only</strong><span class="muted small">{{ counts.reviewed }} vendors checked by a person</span></span>
+            </label>
+            <label class="option-row">
+                <input type="radio" name="status" value="new">
+                <span><strong>Not yet reviewed</strong><span class="muted small">{{ counts.new }} vendors</span></span>
+            </label>
+
+            <p class="section-title" style="margin-top:20px">File type</p>
+            <p class="section-sub">Both contain the same columns: company, first and last name, job title, phones, emails, website, address, destinations, notes, status and source.</p>
+        </div>
+        <div class="form-actions">
+            <button class="btn" type="submit" formaction="{{ url_for('export_csv') }}">Download CSV</button>
+            <button class="btn btn-primary" type="submit" formaction="{{ url_for('export_xlsx') }}">Download Excel</button>
+        </div>
+    </form>
+
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-body export-card">
+            <div>
+                <p class="section-title">Connect a CRM automatically</p>
+                <p class="section-sub" style="margin:0">
+                    Other systems on this network can read vendors as JSON at
+                    <code>/api/vendors</code> (add <code>?status=reviewed</code> for reviewed only).
+                </p>
+            </div>
+            <a class="btn" href="{{ url_for('api_vendors', status='reviewed') }}" target="_blank">Open</a>
+        </div>
+    </section>
+</div>
+{% endblock %}

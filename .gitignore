@@ -1,0 +1,37 @@
+# ---- Secrets - NEVER upload ----
+.env
+.env.*
+!.env.example
+ms_token_cache.json
+
+# ---- Company data (vendor records, card photos) ----
+vendors.db
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+uploads/
+sample_cards/
+test_card.jpg
+*_backup_*.db
+
+# ---- Backups and generated files ----
+backup_*/
+Claude outputs/
+gemini_error.txt
+gemini_test_result.json
+
+# ---- Python ----
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.log
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

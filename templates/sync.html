@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+
+{% block title %}Excel sync · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Excel sync</h1>
+            <p>Keeps the vendors in this app and the <strong>{{ settings.sheet_worksheet }}</strong> sheet of the
+               company Excel file (OneDrive) the same - both ways, without duplicates.</p>
+        </div>
+        {% if account %}
+        <form method="POST" action="{{ url_for('sync_run') }}"
+              onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='Syncing…'">
+            <button class="btn btn-primary" type="submit">Sync now</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if not msal_ok %}
+        <div class="alert alert-error">
+            One-time install needed: in the VS Code terminal (with the app stopped) run
+            <code>pip install msal</code>, then start the app again.
+        </div>
+    {% endif %}
+
+    <!-- Status -->
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Status</h2>
+            {% if account %}
+                <span class="status status-reviewed">Connected</span>
+            {% else %}
+                <span class="status status-pending">Not connected</span>
+            {% endif %}
+        </div>
+        <div class="panel-body">
+            <dl class="kv">
+                <dt>Microsoft 365 account</dt>
+                <dd>
+                    {% if account %}
+                        {{ account }}
+                        <form class="inline" method="POST" action="{{ url_for('sync_signout') }}" style="margin-left:8px">
+                            <button class="btn btn-sm" type="submit">Sign out</button>
+                        </form>
+                    {% elif configured and msal_ok %}
+                        Not signed in
+                        <form class="inline" method="POST" action="{{ url_for('sync_signin') }}" style="margin-left:8px">
+                            <button class="btn btn-sm btn-primary" type="submit">Sign in</button>
+                        </form>
+                    {% else %}
+                        Complete the setup below first
+                    {% endif %}
+                </dd>
+                <dt>Excel file</dt>
+                <dd>{% if settings.sheet_url %}<a href="{{ settings.sheet_url }}" target="_blank">Open the file</a> · sheet <strong>{{ settings.sheet_worksheet }}</strong>{% else %}—{% endif %}</dd>
+                <dt>Automatic sync</dt>
+                <dd>{% if settings.sync_enabled == '1' %}Every day at {{ '%02d' % (settings.sync_hour | int) }}:00 · next: {{ next_run }}{% else %}Off{% endif %}
+                    <div class="hint">Runs while the app is open on this PC. If the app is started after that time, it syncs straight away.</div></dd>
+                <dt>Vendors linked</dt><dd>{{ linked }}</dd>
+                <dt>Last sync</dt>
+                <dd>
+                    {% if settings.sync_last_at %}
+                        {{ settings.sync_last_at }} ({{ 'automatic' if last.trigger == 'daily' else 'Sync now' }}) -
+                        {% if settings.sync_last_ok == '1' %}<span style="color:var(--brand-blue);font-weight:600">OK</span>
+                        {% else %}<span style="color:var(--brand-red);font-weight:600">failed</span>{% endif %}
+                    {% else %}Never{% endif %}
+                </dd>
+            </dl>
+
+            {% if flow.state == 'pending' %}
+                <div class="signin-box" id="signin-box">
+                    <p class="section-title">Sign in to Microsoft 365</p>
+                    <ol class="tips">
+                        <li>Open <a href="{{ flow.url }}" target="_blank"><strong>{{ flow.url }}</strong></a></li>
+                        <li>Enter this code: <span class="signin-code">{{ flow.code }}</span></li>
+                        <li>Sign in with the company account that can edit the Excel file, and accept.</li>
+                    </ol>
+                    <p class="muted small" id="signin-status">Waiting for you to sign in… this page updates by itself.</p>
+                </div>
+            {% elif flow.state == 'error' %}
+                <div class="alert alert-error" style="margin:16px 0 0">Sign-in did not complete: {{ flow.message }}</div>
+            {% endif %}
+        </div>
+    </section>
+
+    <!-- Last result -->
+    {% if last %}
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-header"><h2>Last sync result</h2><span class="muted small">{{ settings.sync_last_at }}</span></div>
+        <div class="panel-body">
+            {% if last.error %}
+                <div class="alert alert-error" style="margin:0">{{ last.error }}</div>
+            {% else %}
+                <div class="summary-grid">
+                    <div class="summary"><div class="num">{{ last.to_sheet_added }}</div><div class="lbl">Added to the sheet</div></div>
+                    <div class="summary"><div class="num">{{ last.to_sheet_updated }}</div><div class="lbl">Updated in the sheet</div></div>
+                    <div class="summary"><div class="num">{{ last.to_app_added }}</div><div class="lbl">Added to the app</div></div>
+                    <div class="summary"><div class="num">{{ (last.to_app_updated or 0) + (last.to_app_merged or 0) }}</div><div class="lbl">Updated in the app</div></div>
+                </div>
+                {% if last.warnings %}
+                    <p class="section-title" style="margin-top:16px">Please check</p>
+                    <ul class="tips">{% for w in last.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+                {% endif %}
+                {% if last.details %}
+                    <details style="margin-top:12px">
+                        <summary>Details ({{ last.details | length }})</summary>
+                        <ul class="tips" style="margin-top:8px">{% for d in last.details %}<li>{{ d }}</li>{% endfor %}</ul>
+                    </details>
+                {% endif %}
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
+    <!-- How it works -->
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-header"><h2>How the sync works</h2></div>
+        <div class="panel-body">
+            <ul class="tips">
+                <li><strong>App → sheet:</strong> new vendors (scanned, added, imported) are added as new rows; vendors edited in the app update their row.</li>
+                <li><strong>Sheet → app:</strong> rows typed into the sheet are added to the app - or, if the vendor already exists (same email, same company and contact, or same phone and contact), merged into it. Edits to rows are copied into the app.</li>
+                <li>The <strong>App ID</strong> column links each row to its vendor - please don't change it. Rows that repeat a vendor are marked "Duplicate of #…".</li>
+                <li>If the same vendor was changed in both places, the app's version is kept.</li>
+                <li>Deleting is never copied: a row deleted in the sheet or a vendor deleted in the app is only reported here.</li>
+            </ul>
+        </div>
+    </section>
+
+    <!-- Setup -->
+    <form class="panel" method="POST" style="margin-top:20px">
+        <details {{ 'open' if not configured }}>
+            <summary class="panel-header" style="list-style:none;cursor:pointer">
+                <h2>Setup</h2><span class="muted small">{{ 'Done - click to change' if configured else 'One-time setup' }}</span>
+            </summary>
+            <div class="panel-body form-grid">
+                <div class="full">
+                    <label for="sheet_url">Link to the Excel file</label>
+                    <input type="text" id="sheet_url" name="sheet_url" value="{{ settings.sheet_url }}">
+                    <div class="hint">Open the file in the browser and copy the address, or use Share → Copy link.</div>
+                </div>
+                <div>
+                    <label for="sheet_worksheet">Sheet (tab) name</label>
+                    <input type="text" id="sheet_worksheet" name="sheet_worksheet" value="{{ settings.sheet_worksheet }}">
+                </div>
+                <div>
+                    <label for="sync_hour">Daily sync time</label>
+                    <select id="sync_hour" name="sync_hour">
+                        {% for h in range(6, 22) %}
+                            <option value="{{ h }}" {{ 'selected' if settings.sync_hour | int == h }}>{{ '%02d' % h }}:00</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="ms_client_id">Application (client) ID</label>
+                    <input type="text" id="ms_client_id" name="ms_client_id" value="{{ settings.ms_client_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                </div>
+                <div>
+                    <label for="ms_tenant_id">Directory (tenant) ID</label>
+                    <input type="text" id="ms_tenant_id" name="ms_tenant_id" value="{{ settings.ms_tenant_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                </div>
+                <div class="full hint">
+                    Both IDs come from the app registration in Microsoft Entra (see the setup guide).
+                </div>
+                <div class="full">
+                    <label class="option-row" style="margin:0">
+                        <input type="checkbox" name="sync_enabled" value="1" {{ 'checked' if settings.sync_enabled == '1' }}>
+                        <span><strong>Sync automatically every day</strong><span class="muted small">Turn off to sync only with the "Sync now" button.</span></span>
+                    </label>
+                </div>
+            </div>
+            <div class="form-actions">
+                <span></span>
+                <button class="btn btn-primary" type="submit">Save setup</button>
+            </div>
+        </details>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if flow.state == 'pending' %}
+<script>
+    // Check every 3 seconds whether the Microsoft sign-in has finished
+    const timer = setInterval(async function () {
+        try {
+            const r = await fetch("{{ url_for('sync_signin_status') }}");
+            const s = await r.json();
+            if (s.state !== "pending") { clearInterval(timer); window.location.reload(); }
+        } catch (e) {}
+    }, 3000);
+</script>
+{% endif %}
+{% endblock %}

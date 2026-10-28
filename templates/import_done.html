@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Import finished · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Import finished</h1>
+            <p><strong>{{ filename }}</strong> · {{ total }} row{{ 's' if total != 1 }} processed</p>
+        </div>
+    </div>
+
+    <section class="panel">
+        <div class="panel-body">
+            <div class="summary-grid">
+                <div class="summary"><div class="num" style="color:var(--success)">{{ added }}</div><div class="lbl">New vendors added</div></div>
+                <div class="summary"><div class="num" style="color:var(--primary)">{{ merged }}</div><div class="lbl">Duplicates merged</div></div>
+                <div class="summary"><div class="num">{{ skipped_dup }}</div><div class="lbl">Duplicates skipped</div></div>
+                <div class="summary"><div class="num" style="color:{{ 'var(--warning)' if invalid else 'inherit' }}">{{ invalid | length }}</div><div class="lbl">Rows not imported</div></div>
+            </div>
+
+            {% if merged %}
+                <p class="hint" style="margin-top:14px">
+                    Merged vendors: phones, emails and destinations were combined;
+                    {{ 'other fields were only filled where empty.' if merge_mode == 'fill' else "other fields were updated with the file's values." }}
+                </p>
+            {% endif %}
+
+            {% if invalid %}
+                <details style="margin-top:16px" {{ 'open' if invalid | length <= 10 }}>
+                    <summary>Rows not imported</summary>
+                    <ul class="tips" style="margin-top:8px">
+                        {% for number, reason in invalid[:100] %}
+                            <li>Row {{ number }}: {{ reason }}</li>
+                        {% endfor %}
+                        {% if invalid | length > 100 %}<li>… and {{ invalid | length - 100 }} more</li>{% endif %}
+                    </ul>
+                </details>
+            {% endif %}
+        </div>
+        <div class="form-actions">
+            <a class="btn" href="{{ url_for('import_page') }}">Import another file</a>
+            <a class="btn btn-primary" href="{{ url_for('index') }}">View vendors</a>
+        </div>
+    </section>
+</div>
+{% endblock %}

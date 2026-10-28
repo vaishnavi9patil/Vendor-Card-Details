@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Vendors · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Vendors</h1>
+        <p>Review new vendors before exporting them to the CRM.</p>
+    </div>
+    <div class="header-actions">
+        <a class="btn" href="{{ url_for('import_page') }}">Import</a>
+        <a class="btn" href="{{ url_for('export_xlsx', search=search, status=status) }}"
+           title="Download the vendors shown below as an Excel file">Download Excel</a>
+        <a class="btn btn-primary" href="{{ url_for('scan') }}">Scan card</a>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="toolbar">
+        <div class="tabs">
+            {% for key, label in [('', 'All'), ('new', 'To review'), ('reviewed', 'Reviewed'), ('pending', 'AI pending')] %}
+                {% if key != 'pending' or counts.pending %}
+                    <a class="tab{{ ' active' if status == key }}"
+                       href="{{ url_for('index', search=search, status=key) if key else url_for('index', search=search) }}">
+                        {{ label }}<span class="n">{{ counts[key or 'all'] }}</span>
+                    </a>
+                {% endif %}
+            {% endfor %}
+        </div>
+        <form method="GET" action="{{ url_for('index') }}">
+            {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+            <input id="vendor-search" name="search" type="search" value="{{ search }}"
+                   placeholder="Search company, person, destination, email, phone…"
+                   aria-label="Search vendors">
+            <button class="btn" type="submit">Search</button>
+            {% if search %}<a class="btn" href="{{ url_for('index', status=status) if status else url_for('index') }}">Clear</a>{% endif %}
+        </form>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Company</th>
+                    <th class="hide-sm col-contact">Contact</th>
+                    <th class="hide-sm">Phone / Email</th>
+                    <th class="hide-sm col-dest">Destinations</th>
+                    <th class="hide-sm">Added</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in vendors %}
+                    {% set link = url_for('vendor_detail', vendor_id=v.id) %}
+                    <tr onclick="window.location='{{ link }}'">
+                        <td>
+                            <a class="cell-main" href="{{ link }}">{{ v.company or '(No company)' }}</a>
+                            {% if v.websites %}<div class="cell-sub hide-sm">{{ v.websites[0] }}</div>{% endif %}
+                            {% if v.person_name %}<div class="cell-sub show-sm">{{ v.person_name }}</div>{% endif %}
+                        </td>
+                        <td class="hide-sm">
+                            <div>{{ v.person_name or '—' }}</div>
+                            {% if v.designation %}<div class="cell-sub">{{ v.designation }}</div>{% endif %}
+                        </td>
+                        <td class="hide-sm">
+                            <div class="nowrap">
+                                {{ v.phone_numbers[0] if v.phone_numbers else '—' }}
+                                {% if v.phone_numbers | length > 1 %}<span class="cell-sub">&nbsp;+{{ v.phone_numbers | length - 1 }}</span>{% endif %}
+                            </div>
+                            {% if v.emails %}
+                                <div class="cell-sub">{{ v.emails[0] }}{% if v.emails | length > 1 %} &nbsp;+{{ v.emails | length - 1 }}{% endif %}</div>
+                            {% endif %}
+                        </td>
+                        <td class="hide-sm">
+                            <div class="tags">
+                                {% for d in v.destinations_covered[:3] %}<span class="tag">{{ d }}</span>{% endfor %}
+                                {% if v.destinations_covered | length > 3 %}
+                                    <span class="tag">+{{ v.destinations_covered | length - 3 }}</span>
+                                {% endif %}
+                                {% if not v.destinations_covered %}<span class="muted">—</span>{% endif %}
+                            </div>
+                        </td>
+                        <td class="hide-sm nowrap">
+                            <div>{{ v.created_at | localtime }}</div>
+                            <div class="cell-sub">
+                                {{ {'scan': 'Card scan', 'import': 'Excel import', 'manual': 'Manual', 'sheet': 'Excel sheet'}.get(v.source or 'scan') }}
+                            </div>
+                        </td>
+                        <td>
+                            {% if v.status == 'reviewed' %}
+                                <span class="status status-reviewed">Reviewed</span>
+                            {% elif v.status == 'pending' %}
+                                <span class="status status-pending">AI pending</span>
+                            {% else %}
+                                <span class="status status-new">To review</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr class="empty">
+                        <td colspan="6">
+                            {% if search or status %}
+                                No vendors match this filter.
+                            {% else %}
+                                No vendors yet. <a href="{{ url_for('scan') }}">Scan a card</a>
+                                or <a href="{{ url_for('import_page') }}">import an Excel file</a> to get started.
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // When the search box is emptied (the × button, or deleting the text),
+    // go straight back to the full vendor list.
+    (function () {
+        const box = document.getElementById("vendor-search");
+        const hadSearch = {{ 'true' if search else 'false' }};
+        if (!box || !hadSearch) return;
+        const backToAll = function () {
+            if (box.value.trim() === "") {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("search");
+                window.location.href = url.pathname + (url.search || "");
+            }
+        };
+        box.addEventListener("search", backToAll);   // × button / Enter on empty box
+        box.addEventListener("input", backToAll);    // text deleted with the keyboard
+    })();
+</script>
+{% endblock %}

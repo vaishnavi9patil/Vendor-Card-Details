@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}Scan cards · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Scan business cards</h1>
+            <p>Add up to {{ max_cards }} cards at once. Each card is read and saved as a separate vendor.</p>
+        </div>
+    </div>
+
+    <form id="scan-form" method="POST" action="{{ url_for('scan') }}" enctype="multipart/form-data">
+        <div id="card-list" class="stack"></div>
+
+        <div class="scan-actions">
+            <div>
+                <button id="add-card" class="btn" type="button">+ Add another card</button>
+                <span id="card-count" class="muted small"></span>
+            </div>
+            <button id="scan-button" class="btn btn-primary" type="submit">Scan card</button>
+        </div>
+    </form>
+
+    <section id="scan-summary" class="panel" style="display:none;margin-top:20px">
+        <div class="panel-body">
+            <p class="section-title" id="summary-title"></p>
+            <p class="section-sub" id="summary-text" style="margin:0"></p>
+        </div>
+        <div class="form-actions">
+            <a class="btn" href="{{ url_for('scan') }}">Scan more cards</a>
+            <a class="btn btn-primary" href="{{ url_for('index', status='new') }}">Review new vendors</a>
+        </div>
+    </section>
+
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-header"><h2>Tips for the best results</h2></div>
+        <div class="panel-body">
+            <ul class="tips">
+                <li>Place the card on a plain, dark surface and photograph it from straight above.</li>
+                <li>Use good light and avoid glare or shadows on the text.</li>
+                <li>Keep the card upright - sideways photos work but take longer.</li>
+                <li>Add the back side when it lists other staff, offices or destinations.</li>
+                <li>Cards are read one after another - each takes about a minute, so keep this page open until all are done.</li>
+            </ul>
+        </div>
+    </section>
+</div>
+
+<template id="card-template">
+    <section class="panel scan-card">
+        <div class="panel-header">
+            <h2 class="card-title">Card 1</h2>
+            <div class="header-actions">
+                <span class="card-status"></span>
+                <button class="btn btn-sm remove-card" type="button" title="Remove this card">Remove</button>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="scan-grid">
+                <label class="drop">
+                    <img alt="Front preview">
+                    <div class="drop-title">Front</div>
+                    <div class="drop-sub">Required · click or drop an image</div>
+                    <input type="file" class="file-front" accept="image/jpeg,image/png,image/webp">
+                </label>
+                <label class="drop">
+                    <img alt="Back preview">
+                    <div class="drop-title">Back</div>
+                    <div class="drop-sub">Optional · click or drop an image</div>
+                    <input type="file" class="file-back" accept="image/jpeg,image/png,image/webp">
+                </label>
+            </div>
+            <div class="card-result"></div>
+        </div>
+    </section>
+</template>
+
+<form id="done-form" method="POST" action="{{ url_for('scan_done') }}" style="display:none">
+    <input type="hidden" name="message"><input type="hidden" name="category"><input type="hidden" name="next">
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const MAX = {{ max_cards }};
+    const list = document.getElementById("card-list");
+    const template = document.getElementById("card-template");
+    const addButton = document.getElementById("add-card");
+    const scanButton = document.getElementById("scan-button");
+    const countLabel = document.getElementById("card-count");
+    let scanning = false;
+
+    function cards() { return Array.from(list.querySelectorAll(".scan-card")); }
+
+    function setupDrop(box) {
+        const input = box.querySelector("input[type=file]");
+        const img = box.querySelector("img");
+        const sub = box.querySelector(".drop-sub");
+        const original = sub.textContent;
+        function show() {
+            const file = input.files[0];
+            if (file) {
+                img.src = URL.createObjectURL(file);
+                box.classList.add("has-file");
+                box.classList.remove("missing");
+                sub.textContent = file.name + " · click to change";
+            } else {
+                box.classList.remove("has-file");
+                sub.textContent = original;
+            }
+        }
+        input.addEventListener("change", show);
+        ["dragenter", "dragover"].forEach(e => box.addEventListener(e, () => box.classList.add("dragover")));
+        ["dragleave", "drop"].forEach(e => box.addEventListener(e, () => box.classList.remove("dragover")));
+        box.addEventListener("drop", () => setTimeout(show, 0));
+    }
+
+    function refresh() {
+        const all = cards();
+        all.forEach((card, i) => {
+            card.querySelector(".card-title").textContent = "Card " + (i + 1);
+            card.querySelector(".remove-card").style.display = (all.length > 1 && !scanning) ? "" : "none";
+            // names used by the no-JavaScript fallback (first card only)
+            card.querySelector(".file-front").name = "front_" + (i + 1);
+            card.querySelector(".file-back").name = "back_" + (i + 1);
+        });
+        addButton.disabled = all.length >= MAX || scanning;
+        countLabel.textContent = all.length >= MAX
+            ? "Maximum of " + MAX + " cards per scan"
+            : all.length + " of " + MAX + " cards";
+        scanButton.textContent = all.length > 1 ? "Scan " + all.length + " cards" : "Scan card";
+    }
+
+    function addCard() {
+        if (cards().length >= MAX) return;
+        const card = template.content.firstElementChild.cloneNode(true);
+        card.querySelectorAll(".drop").forEach(setupDrop);
+        card.querySelector(".remove-card").addEventListener("click", function () {
+            card.remove();
+            refresh();
+        });
+        list.appendChild(card);
+        refresh();
+        return card;
+    }
+
+    function setStatus(card, kind, text) {
+        const badge = card.querySelector(".card-status");
+        badge.className = "card-status status " + ({
+            waiting: "status-new", working: "status-new", saved: "status-reviewed",
+            warning: "status-pending", error: "status-pending"
+        }[kind] || "");
+        badge.textContent = text;
+    }
+
+    addButton.addEventListener("click", addCard);
+
+    document.getElementById("scan-form").addEventListener("submit", async function (event) {
+        event.preventDefault();
+        if (scanning) return;
+
+        // Every card needs a front image
+        let missing = false;
+        cards().forEach(card => {
+            const box = card.querySelector(".file-front").closest(".drop");
+            if (!card.querySelector(".file-front").files[0]) {
+                box.classList.add("missing");
+                missing = true;
+            }
+        });
+        if (missing) {
+            alertBox("Please add the front image for every card (or remove the empty card).");
+            return;
+        }
+
+        const oldAlert = document.getElementById("scan-alert");
+        if (oldAlert) oldAlert.remove();
+        scanning = true;
+        refresh();
+        scanButton.disabled = true;
+        cards().forEach(card => {
+            card.querySelectorAll("input[type=file]").forEach(i => i.disabled = true);
+            card.classList.add("locked");
+            setStatus(card, "waiting", "Waiting");
+        });
+        window.addEventListener("beforeunload", warnLeave);
+
+        const results = [];
+        const all = cards();
+        for (let i = 0; i < all.length; i++) {
+            const card = all[i];
+            const started = Date.now();
+            scanButton.textContent = "Scanning card " + (i + 1) + " of " + all.length + "…";
+            const timer = setInterval(() => setStatus(card, "working",
+                "Reading… " + Math.round((Date.now() - started) / 1000) + "s"), 1000);
+            setStatus(card, "working", "Reading… 0s");
+
+            const data = new FormData();
+            data.append("front", card.querySelector(".file-front").files[0]);
+            const back = card.querySelector(".file-back").files[0];
+            if (back) data.append("back", back);
+
+            let outcome;
+            try {
+                const response = await fetch("{{ url_for('scan_card_api') }}", { method: "POST", body: data });
+                outcome = await response.json();
+            } catch (err) {
+                outcome = { ok: false, category: "error", message: "Could not reach the app: " + err };
+            }
+            clearInterval(timer);
+            results.push(outcome);
+
+            const box = card.querySelector(".card-result");
+            if (outcome.ok) {
+                setStatus(card, outcome.category === "warning" ? "warning" : "saved",
+                          outcome.category === "warning" ? "Saved - AI busy" : "Saved");
+                box.innerHTML = "";
+                const line = document.createElement("div");
+                line.className = "result-line";
+                const link = document.createElement("a");
+                link.href = outcome.url; link.target = "_blank";
+                link.textContent = outcome.name + (outcome.person ? " - " + outcome.person : "");
+                line.appendChild(link);
+                line.appendChild(document.createTextNode(" · " + outcome.short + " · " + outcome.seconds + "s"));
+                box.appendChild(line);
+            } else {
+                setStatus(card, "error", "Failed");
+                box.innerHTML = "";
+                const line = document.createElement("div");
+                line.className = "result-line error";
+                line.textContent = outcome.message;
+                box.appendChild(line);
+            }
+        }
+
+        window.removeEventListener("beforeunload", warnLeave);
+
+        // One card: behave as before - open the vendor to review it
+        if (all.length === 1 && results[0].ok) {
+            const form = document.getElementById("done-form");
+            form.message.value = results[0].message;
+            form.category.value = results[0].category;
+            form.next.value = results[0].url;
+            form.submit();
+            return;
+        }
+
+        const ok = results.filter(r => r.ok).length;
+        const failed = results.length - ok;
+        const busy = results.filter(r => r.ok && r.ai_status === "pending").length;
+        document.getElementById("summary-title").textContent =
+            ok + " of " + results.length + " card" + (results.length > 1 ? "s" : "") + " saved";
+        let text = "Open each vendor from the links above to check the details, or review all new vendors.";
+        if (busy) text += " " + busy + " saved with basic details only because the AI service was busy - use Retry AI on those vendors later.";
+        if (failed) text += " " + failed + " card" + (failed > 1 ? "s" : "") + " could not be read - try a clearer photo.";
+        document.getElementById("summary-text").textContent = text;
+        document.getElementById("scan-summary").style.display = "";
+        scanButton.textContent = "Done";
+        addButton.style.display = "none";
+        countLabel.style.display = "none";
+        document.getElementById("scan-summary").scrollIntoView({ behavior: "smooth" });
+    });
+
+    function warnLeave(event) { event.preventDefault(); event.returnValue = ""; }
+
+    function alertBox(text) {
+        let box = document.getElementById("scan-alert");
+        if (!box) {
+            box = document.createElement("div");
+            box.id = "scan-alert";
+            box.className = "alert alert-error";
+            list.parentNode.insertBefore(box, list);
+        }
+        box.textContent = text;
+        box.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    addCard();
+})();
+</script>
+{% endblock %}

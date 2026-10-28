@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Import · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Import vendors</h1>
+            <p>Add many vendors at once from an Excel or CSV file - for example an old vendor list or a CRM export.</p>
+        </div>
+    </div>
+
+    <section class="panel">
+        <form id="import-form" method="POST" enctype="multipart/form-data">
+            <div class="panel-body">
+                <label class="drop" style="min-height:160px;display:flex;flex-direction:column;justify-content:center">
+                    <div class="drop-title">Choose an Excel or CSV file</div>
+                    <div class="drop-sub">.xlsx or .csv · click or drop the file here</div>
+                    <input type="file" name="file" accept=".xlsx,.xlsm,.csv,.txt,.xls" required>
+                </label>
+                <p class="hint" style="margin:0">
+                    Nothing is saved yet. On the next step you can check how the columns are matched
+                    and see a preview before importing.
+                </p>
+            </div>
+            <div class="form-actions">
+                <a class="btn" href="{{ url_for('import_template') }}">Download template</a>
+                <button id="import-button" class="btn btn-primary" type="submit">Upload &amp; preview</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-header"><h2>How it works</h2></div>
+        <div class="panel-body">
+            <ul class="tips">
+                <li>The first row should contain column names such as <em>Company, Contact Name, Phone, Email, Website, Address, Destinations</em>.
+                    Other names like "Mobile No", "Email ID" or "Agency" are recognised too.</li>
+                <li>Several phone numbers, emails or destinations can go in one cell, separated by commas, semicolons or new lines.</li>
+                <li>Duplicates are found automatically - against vendors already saved and inside the file itself
+                    (same email; same company and contact, even written as "Pvt Ltd" or with a shorter name; or same phone and contact).
+                    You choose to merge, add as new or skip each one before anything is saved.</li>
+                <li>Importing several files? Import them one after the other - the second file is checked against the first.</li>
+                <li>Files downloaded from this app's <em>Download Excel</em> can be imported back.</li>
+            </ul>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const box = document.querySelector(".drop");
+    const input = box.querySelector("input");
+    const sub = box.querySelector(".drop-sub");
+    input.addEventListener("change", function () {
+        if (input.files[0]) {
+            box.classList.add("has-file");
+            sub.textContent = input.files[0].name + " · click to change";
+        }
+    });
+    ["dragenter", "dragover"].forEach(e => box.addEventListener(e, () => box.classList.add("dragover")));
+    ["dragleave", "drop"].forEach(e => box.addEventListener(e, () => box.classList.remove("dragover")));
+    box.addEventListener("drop", () => setTimeout(() => input.dispatchEvent(new Event("change")), 0));
+    document.getElementById("import-form").addEventListener("submit", function () {
+        const b = document.getElementById("import-button");
+        b.disabled = true; b.textContent = "Reading file…";
+    });
+</script>
+{% endblock %}

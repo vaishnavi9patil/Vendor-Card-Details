@@ -1,0 +1,78 @@
+{% set icons = {
+    "vendors": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="8" width="10" height="8" rx="1"/>',
+    "add": '<circle cx="12" cy="12" r="9"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+    "import": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+    "export": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
+    "settings": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    "sync": '<path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/>',
+    "menu": '<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>',
+} %}
+{% macro icon(name) %}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ icons[name] | safe }}</svg>{% endmacro %}
+{% macro nav_link(endpoint, label, icon_name, active_endpoints=()) %}
+    {% set active = request.endpoint == endpoint or request.endpoint in active_endpoints %}
+    <a href="{{ url_for(endpoint) }}" class="side-link{{ ' active' if active }}">
+        {{ icon(icon_name) }}<span>{{ label }}</span>{{ caller() if caller }}
+    </a>
+{% endmacro %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Vendor Card Scanner{% endblock %}</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="shell">
+
+    <aside class="sidebar" id="sidebar">
+        <a class="side-logo" href="{{ url_for('index') }}" title="Vendor Cards - home">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Khanna Travels - Holidays Redefined">
+        </a>
+        <div class="side-app-name">Vendor Card Scanner</div>
+
+        <nav class="side-nav">
+            <div class="side-section">Vendors</div>
+            {% call nav_link('index', 'All vendors', 'vendors', ('vendor_detail',)) %}
+                <span class="side-count">{{ nav_counts.total }}</span>
+            {% endcall %}
+            {{ nav_link('scan', 'Scan card', 'scan') }}
+            {{ nav_link('vendor_new', 'Add manually', 'add') }}
+
+            <div class="side-section">Data</div>
+            {{ nav_link('import_page', 'Import', 'import', ('import_preview',)) }}
+            {{ nav_link('export_page', 'Export', 'export') }}
+            {{ nav_link('sync_page', 'Excel sync', 'sync') }}
+        </nav>
+
+        <div class="side-bottom">
+            {{ nav_link('settings_page', 'Settings', 'settings') }}
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="mobile-bar">
+            <button class="menu-button" type="button" aria-label="Open menu"
+                    onclick="document.body.classList.toggle('menu-open')">{{ icon('menu') }}</button>
+            <img class="mobile-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Khanna Travels">
+        </header>
+        <div class="menu-backdrop" onclick="document.body.classList.remove('menu-open')"></div>
+
+        <main class="page">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category in ['success', 'warning', 'error', 'info'] else 'info' }}"
+                         role="status">{{ message }}</div>
+                {% endfor %}
+            {% endwith %}
+
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</div>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

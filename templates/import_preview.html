@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% block title %}Check import · Vendor Cards{% endblock %}
+
+{% macro who(v) %}
+    <span class="cell-main">{{ v.company or '—' }}</span>
+    {% if v.person_name %}<div>{{ v.person_name }}{% if v.designation %} <span class="cell-sub">· {{ v.designation }}</span>{% endif %}</div>{% endif %}
+    {% if v.phone_numbers %}<div class="cell-sub">{{ v.phone_numbers | join(', ') }}</div>{% endif %}
+    {% if v.emails %}<div class="cell-sub">{{ v.emails | join(', ') }}</div>{% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="small"><a href="{{ url_for('import_page') }}">← Choose another file</a></div>
+        <h1>Check the import</h1>
+        <p><strong>{{ filename }}</strong> · {{ rows | length }} row{{ 's' if rows | length != 1 }} found</p>
+    </div>
+</div>
+
+<form method="POST" id="import-confirm">
+<div class="summary-grid" style="margin-bottom:20px">
+    <div class="summary panel"><div class="num" style="color:var(--success)">{{ counts.new }}</div><div class="lbl">New vendors</div></div>
+    <div class="summary panel"><div class="num" style="color:var(--primary)">{{ counts.dup_saved }}</div><div class="lbl">Already saved in the system</div></div>
+    <div class="summary panel"><div class="num" style="color:var(--primary)">{{ counts.dup_file }}</div><div class="lbl">Repeated inside this file</div></div>
+    <div class="summary panel"><div class="num" style="color:{{ 'var(--warning)' if counts.invalid else 'inherit' }}">{{ counts.invalid }}</div><div class="lbl">Can't be imported</div></div>
+</div>
+
+<div class="detail-layout">
+
+    <div class="stack">
+
+        {% if duplicates %}
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Duplicates found ({{ duplicates | length }})</h2>
+                    <div class="muted small">These rows match a vendor that is already saved or appears earlier in this file. Choose what to do with each.</div>
+                </div>
+                <div class="header-actions">
+                    <span class="muted small">Set all:</span>
+                    <button class="btn btn-sm" type="button" onclick="setAll('merge')">Merge</button>
+                    <button class="btn btn-sm" type="button" onclick="setAll('new')">Add as new</button>
+                    <button class="btn btn-sm" type="button" onclick="setAll('skip')">Skip</button>
+                </div>
+            </div>
+            <div class="table-wrap" style="max-height:520px">
+                <table class="map-table">
+                    <thead>
+                        <tr><th>Row</th><th>In your file</th><th>Matches</th><th style="width:150px">Action</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for p in duplicates %}
+                            {% set chosen = form.get('dup_' ~ p.number, 'merge') %}
+                            <tr>
+                                <td class="muted">{{ p.number }}</td>
+                                <td>{{ who(p.vendor) }}</td>
+                                <td>
+                                    {% if p.match.kind == 'db' %}
+                                        <span class="status status-reviewed" style="background:var(--primary-soft);color:var(--primary)">Saved vendor</span>
+                                        <a href="{{ url_for('vendor_detail', vendor_id=p.match.ref) }}" target="_blank" class="small">#{{ p.match.ref }}</a>
+                                    {% else %}
+                                        <span class="status status-new" style="background:#eef1f5;color:#3e4c59;box-shadow:none">Row {{ p.match.ref }} of this file</span>
+                                    {% endif %}
+                                    <div style="margin-top:4px">{{ p.match.label }}</div>
+                                    <div class="cell-sub">Matched by {{ p.reason }}{% if p.adds %} · merging adds {{ p.adds | join(', ') }}{% endif %}</div>
+                                </td>
+                                <td>
+                                    <select name="dup_{{ p.number }}" class="dup-action">
+                                        <option value="merge" {{ 'selected' if chosen == 'merge' }}>Merge</option>
+                                        <option value="new" {{ 'selected' if chosen == 'new' }}>Add as new</option>
+                                        <option value="skip" {{ 'selected' if chosen == 'skip' }}>Skip</option>
+                                    </select>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <section class="panel">
+            <div class="panel-header">
+                <h2>New vendors{% if counts.new > new_rows | length %} (first {{ new_rows | length }} of {{ counts.new }}){% endif %}</h2>
+            </div>
+            <div class="table-wrap" style="max-height:420px">
+                <table>
+                    <thead><tr><th>Row</th><th>Vendor</th><th>Address</th><th>Destinations</th></tr></thead>
+                    <tbody>
+                        {% for p in new_rows %}
+                            <tr style="cursor:default">
+                                <td class="muted">{{ p.number }}</td>
+                                <td>{{ who(p.vendor) }}</td>
+                                <td class="cell-sub">{{ p.vendor.address or '—' }}</td>
+                                <td><div class="tags">{% for d in p.vendor.destinations_covered[:4] %}<span class="tag">{{ d }}</span>{% endfor %}</div></td>
+                            </tr>
+                        {% else %}
+                            <tr class="empty"><td colspan="4">No new vendors in this file.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        {% if invalid %}
+        <section class="panel">
+            <div class="panel-header"><h2>Can't be imported ({{ invalid | length }})</h2></div>
+            <div class="panel-body">
+                <ul class="tips">
+                    {% for p in invalid[:50] %}<li>Row {{ p.number }}: {{ p.problem }}</li>{% endfor %}
+                    {% if invalid | length > 50 %}<li>… and {{ invalid | length - 50 }} more</li>{% endif %}
+                </ul>
+            </div>
+        </section>
+        {% endif %}
+
+        <section class="panel">
+            <details {{ 'open' if form }}>
+                <summary class="panel-header" style="list-style:none;cursor:pointer">
+                    <h2>Column matching</h2>
+                    <span class="muted small">Matched automatically - click to check or change</span>
+                </summary>
+                <div class="table-wrap" style="max-height:none">
+                    <table class="map-table">
+                        <thead>
+                            <tr><th>Column in your file</th><th>Example values</th><th style="width:240px">Save as</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for header in headers %}
+                                {% set i = loop.index0 %}
+                                <tr>
+                                    <td><strong>{{ header }}</strong></td>
+                                    <td><div class="sample">{{ samples[i] | select | join(' · ') or '—' }}</div></td>
+                                    <td>
+                                        <select name="col_{{ i }}" class="{{ 'mapped' if mapping[i] }}"
+                                                onchange="this.classList.toggle('mapped', !!this.value); document.getElementById('refresh-note').style.display='flex'">
+                                            {% for value, label in targets.items() %}
+                                                <option value="{{ value }}" {{ 'selected' if value == mapping[i] }}>{{ label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="form-actions" id="refresh-note" style="display:none;align-items:center">
+                    <span class="muted small">You changed the matching - update the check to see the effect.</span>
+                    <button class="btn" type="submit" name="action" value="refresh">Update check</button>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <aside class="panel" style="position:sticky;top:16px">
+        <div class="panel-header"><h2>Import options</h2></div>
+        <div class="panel-body">
+            <p class="section-sub" style="margin-bottom:8px"><strong>When merging a duplicate</strong></p>
+            {% set mode = form.get('merge_mode', 'update') %}
+            <label class="option-row">
+                <input type="radio" name="merge_mode" value="update" {{ 'checked' if mode != 'fill' }}>
+                <span><strong>Use the file's values</strong><span class="muted small">Name, title, address etc. are replaced by the file. Phones, emails and destinations are combined.</span></span>
+            </label>
+            <label class="option-row">
+                <input type="radio" name="merge_mode" value="fill" {{ 'checked' if mode == 'fill' }}>
+                <span><strong>Keep saved values</strong><span class="muted small">Only empty fields are filled in. Phones, emails and destinations are still combined.</span></span>
+            </label>
+
+            <p class="section-sub" style="margin:16px 0 8px"><strong>Status</strong></p>
+            <label class="option-row">
+                <input type="checkbox" name="mark_reviewed" value="1" {{ 'checked' if form.get('mark_reviewed') }}>
+                <span><strong>Mark as reviewed</strong><span class="muted small">Tick if this list is already checked and ready for the CRM.</span></span>
+            </label>
+        </div>
+        <div class="form-actions">
+            <a class="btn" href="{{ url_for('import_page') }}">Cancel</a>
+            <button class="btn btn-primary" type="submit" name="action" value="import" id="import-go">Import</button>
+        </div>
+    </aside>
+
+</div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function setAll(value) {
+        document.querySelectorAll(".dup-action").forEach(s => s.value = value);
+    }
+    document.getElementById("import-confirm").addEventListener("submit", function (event) {
+        if (event.submitter && event.submitter.value === "import") {
+            const b = document.getElementById("import-go");
+            setTimeout(() => { b.disabled = true; b.textContent = "Importing…"; }, 0);
+        }
+    });
+</script>
+{% endblock %}

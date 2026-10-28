@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Add vendor' if is_new else (vendor.company or 'Vendor') }} · Vendor Cards{% endblock %}
+
+{% macro list_field(name, label, hint, rows=3) %}
+    <div>
+        <label for="{{ name }}">{{ label }}</label>
+        <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}">{{ vendor[name] | join('\n') }}</textarea>
+        <div class="hint">{{ hint }}</div>
+    </div>
+{% endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="small"><a href="{{ url_for('index') }}">← All vendors</a></div>
+        {% if is_new %}
+            <h1>Add a vendor</h1>
+            <p>Enter the details by hand - useful when there is no card to scan.</p>
+        {% else %}
+            <h1>{{ vendor.company or '(No company)' }}</h1>
+            <p>
+                {% if vendor.status == 'reviewed' %}
+                    <span class="status status-reviewed">Reviewed</span>
+                {% elif vendor.status == 'pending' %}
+                    <span class="status status-pending">AI pending</span>
+                {% else %}
+                    <span class="status status-new">To review</span>
+                {% endif %}
+                &nbsp;{{ vendor.person_name }}{% if vendor.designation %} · {{ vendor.designation }}{% endif %}
+            </p>
+        {% endif %}
+    </div>
+    {% if not is_new %}
+    <div class="header-actions">
+        {% if vendor.status == 'pending' %}
+            <form class="inline" method="POST" action="{{ url_for('retry_ai', vendor_id=vendor.id) }}"
+                  onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='Asking AI…'">
+                <button class="btn" type="submit">Retry AI</button>
+            </form>
+        {% endif %}
+        <form class="inline" method="POST" action="{{ url_for('vendor_delete', vendor_id=vendor.id) }}"
+              onsubmit="return confirm('Delete this vendor? This cannot be undone.')">
+            <button class="btn btn-danger" type="submit">Delete</button>
+        </form>
+    </div>
+    {% endif %}
+</div>
+
+{% if vendor.status == 'pending' %}
+    <div class="alert alert-warning">
+        Only basic details were extracted because the AI service was busy. Click
+        <strong>Retry AI</strong> to fill in the rest, or complete the fields yourself and save.
+    </div>
+{% endif %}
+
+<div class="{{ 'narrow' if is_new else 'detail-layout' }}">
+
+    <form class="panel" method="POST">
+        <div class="panel-header">
+            <h2>Vendor details</h2>
+            {% if not is_new and vendor.front_image %}
+                <span class="muted small">Check against the card image, then save.</span>
+            {% endif %}
+        </div>
+        <div class="panel-body form-grid">
+            <div>
+                <label for="company">Company</label>
+                <input type="text" id="company" name="company" value="{{ vendor.company }}">
+            </div>
+            <div>
+                <label for="person_name">Contact name</label>
+                <input type="text" id="person_name" name="person_name" value="{{ vendor.person_name }}">
+            </div>
+            <div class="full">
+                <label for="designation">Job title</label>
+                <input type="text" id="designation" name="designation" value="{{ vendor.designation }}">
+            </div>
+
+            {{ list_field('phone_numbers', 'Phone numbers', 'One per line. The first is the primary number.') }}
+            {{ list_field('emails', 'Emails', 'One per line. The first is the primary email.') }}
+            {{ list_field('websites', 'Websites', 'One per line.', 2) }}
+            {{ list_field('destinations_covered', 'Destinations covered', 'One per line.', 4) }}
+
+            <div class="full">
+                <label for="address">Address</label>
+                <input type="text" id="address" name="address" value="{{ vendor.address }}">
+            </div>
+            <div class="full">
+                <label for="services_notes">Services / notes</label>
+                <textarea id="services_notes" name="services_notes" rows="2">{{ vendor.services_notes }}</textarea>
+            </div>
+            <div class="full">
+                {{ list_field('other_contacts', 'Other contacts on the card',
+                              'One person per line, e.g. "Name - Role - phone - email".', 4) }}
+            </div>
+        </div>
+        <div class="form-actions">
+            <a class="btn" href="{{ url_for('index') }}">Cancel</a>
+            <button class="btn btn-primary" type="submit">{{ 'Add vendor' if is_new else 'Save & mark reviewed' }}</button>
+        </div>
+    </form>
+
+    {% if not is_new %}
+    <aside>
+        <section class="panel">
+            <div class="panel-header"><h2>{{ 'Business card' if vendor.front_image or (vendor.source or 'scan') == 'scan' else 'Source' }}</h2></div>
+            <div class="panel-body">
+                {% if vendor.front_image or vendor.back_image %}
+                    {% if vendor.front_image %}
+                        <a href="{{ url_for('card_image', filename=vendor.front_image) }}" target="_blank">
+                            <img class="card-image" src="{{ url_for('card_image', filename=vendor.front_image) }}" alt="Front of card">
+                        </a>
+                        <div class="image-label">Front · click to enlarge</div>
+                    {% endif %}
+                    {% if vendor.back_image %}
+                        <a href="{{ url_for('card_image', filename=vendor.back_image) }}" target="_blank">
+                            <img class="card-image" src="{{ url_for('card_image', filename=vendor.back_image) }}" alt="Back of card">
+                        </a>
+                        <div class="image-label">Back · click to enlarge</div>
+                    {% endif %}
+                {% elif vendor.source in ('import', 'manual', 'sheet') %}
+                    <p class="muted">This vendor was {{ {'import': 'imported from Excel', 'sheet': 'added in the Excel sheet', 'manual': 'added by hand'}[vendor.source] }}, so there is no card image.</p>
+                {% else %}
+                    <p class="muted">No card image stored for this record (scanned with an older version).</p>
+                {% endif %}
+
+                {% if vendor.ocr_text %}
+                    <details>
+                        <summary>Scanned text</summary>
+                        <pre class="raw">{{ vendor.ocr_text }}</pre>
+                    </details>
+                {% endif %}
+            </div>
+        </section>
+
+        <section class="panel" style="margin-top:20px">
+            <div class="panel-header"><h2>Record</h2></div>
+            <div class="panel-body">
+                <dl class="meta">
+                    <dt>Record ID</dt><dd>{{ vendor.id }}</dd>
+                    <dt>Added</dt><dd>{{ vendor.created_at | localtime }}</dd>
+                    <dt>Updated</dt><dd>{{ vendor.updated_at | localtime }}</dd>
+                    <dt>Source</dt>
+                    <dd>{{ {'scan': 'Business card scan', 'import': 'Excel import', 'manual': 'Added manually', 'sheet': 'Excel sheet'}.get(vendor.source or 'scan') }}</dd>
+                </dl>
+            </div>
+        </section>
+    </aside>
+    {% endif %}
+
+</div>
+{% endblock %}

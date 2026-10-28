@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Settings · Vendor Cards{% endblock %}
+
+{% block content %}
+<div class="narrow">
+    <div class="page-header">
+        <div>
+            <h1>Settings</h1>
+            <p>Options for this installation. They apply to everyone using the app.</p>
+        </div>
+    </div>
+
+    <form method="POST" class="stack">
+        <section class="panel">
+            <div class="panel-header"><h2>Card scanning</h2></div>
+            <div class="panel-body">
+                <p class="section-sub" style="margin-bottom:8px">Reading quality</p>
+                {% for value, title, text in [
+                    ('fast', 'Fast (recommended)', 'Quickest. Works well for normal, clear cards.'),
+                    ('balanced', 'Balanced', 'A little slower; better for cards with very small print.'),
+                    ('accurate', 'Most accurate', 'Slowest; use for difficult cards or poor photos.')] %}
+                    <label class="option-row">
+                        <input type="radio" name="scan_quality" value="{{ value }}" {{ 'checked' if settings.scan_quality == value }}>
+                        <span><strong>{{ title }}</strong><span class="muted small">{{ text }}</span></span>
+                    </label>
+                {% endfor %}
+            </div>
+        </section>
+
+        <div style="display:flex;justify-content:flex-end">
+            <button class="btn btn-primary" type="submit">Save settings</button>
+        </div>
+    </form>
+
+    <section class="panel" style="margin-top:20px">
+        <div class="panel-header">
+            <h2>Data &amp; backup</h2>
+            <a class="btn btn-sm" href="{{ url_for('download_backup') }}">Download backup</a>
+        </div>
+        <div class="panel-body">
+            <dl class="kv">
+                <dt>Vendor records</dt><dd>{{ info.record_count }}</dd>
+                <dt>Database file</dt><dd><code>{{ info.db_path }}</code> ({{ info.db_size | filesize }})</dd>
+                <dt>Card photos</dt><dd><code>{{ info.upload_path }}</code> ({{ info.image_count }} files, {{ info.image_size | filesize }})</dd>
+            </dl>
+            <p class="hint" style="margin-top:12px">
+                The backup is a copy of the database file. Keep it somewhere safe (e.g. OneDrive). To restore,
+                stop the app and replace <code>vendors.db</code> with the backup file.
+            </p>
+        </div>
+    </section>
+</div>
+{% endblock %}
