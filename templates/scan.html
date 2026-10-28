@@ -198,15 +198,17 @@
                 "Reading… " + Math.round((Date.now() - started) / 1000) + "s"), 1000);
             setStatus(card, "working", "Reading… 0s");
 
+            // Phone photos are often 3-8 MB; shrink them first so the upload
+            // stays small and fast (the online version accepts max ~4 MB).
             const data = new FormData();
-            data.append("front", card.querySelector(".file-front").files[0]);
+            data.append("front", await shrinkImage(card.querySelector(".file-front").files[0]), "front.jpg");
             const back = card.querySelector(".file-back").files[0];
-            if (back) data.append("back", back);
+            if (back) data.append("back", await shrinkImage(back), "back.jpg");
 
             let outcome;
             try {
                 const response = await fetch("{{ url_for('scan_card_api') }}", { method: "POST", body: data });
-                const started_job = await response.json();
+                const started_job = await readJson(response);
                 if (!started_job.job) {
                     outcome = started_job;
                 } else {
@@ -279,6 +281,39 @@
         countLabel.style.display = "none";
         document.getElementById("scan-summary").scrollIntoView({ behavior: "smooth" });
     });
+
+    // Resize to max 2000 px and save as JPEG (keeps the photo upright)
+    async function shrinkImage(file, maxSide = 2000, quality = 0.85) {
+        try {
+            const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+            const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(bitmap.width * scale);
+            canvas.height = Math.round(bitmap.height * scale);
+            canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", quality));
+            return (blob && blob.size < file.size) ? blob : file;
+        } catch (e) {
+            return file;      // browser can't resize - send the original
+        }
+    }
+
+    // Turn any answer into a result, also when the server sends an error page
+    async function readJson(response) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            if (response.status === 413) {
+                return { ok: false, category: "error", message: "The photo is too large to upload. Please use a smaller photo." };
+            }
+            if (response.status === 504) {
+                return { ok: false, category: "error", message: "Reading the card took too long. Please try again." };
+            }
+            return { ok: false, category: "error",
+                     message: "The app answered with an error (" + response.status + "). Please try again." };
+        }
+    }
 
     function warnLeave(event) { event.preventDefault(); event.returnValue = ""; }
 
