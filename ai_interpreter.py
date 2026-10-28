@@ -249,16 +249,17 @@ def check_against_ocr(vendor, ocr_text):
 
 # ------------------------------------------------------------- Gemini call
 
-def _ask_gemini(contents):
+def _ask_gemini(contents, schema=None):
     """Ask Gemini, retrying briefly and falling back to other models when
     the main one is overloaded. Raises AIUnavailable if all fail."""
+    schema = schema or VendorCard
     problems = []
 
     for index, model in enumerate(dict.fromkeys(MODELS)):   # unique, in order
         timeout = REQUEST_TIMEOUT if index == 0 else FALLBACK_TIMEOUT
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=VendorCard,
+            response_schema=schema,
             thinking_config=types.ThinkingConfig(thinking_level="LOW"),
             http_options=types.HttpOptions(timeout=timeout * 1000),
         )
@@ -401,3 +402,41 @@ def interpret_vendor_image(image_path):
         types.Part.from_bytes(data=image_path.read_bytes(), mime_type=mime_type),
     ])
     return validate_vendor(data)
+
+
+# ------------------------------------------- cloud mode: Gemini reads photos
+
+class VendorCardWithText(VendorCard):
+    card_text: str = Field(description="All text printed on the card(s), line by line, "
+                                       "exactly as printed. Start each side with "
+                                       "'--- FRONT OF CARD ---' / '--- BACK OF CARD ---'.")
+
+
+def interpret_vendor_images(image_paths):
+    """
+    Read the card photos directly with Gemini (used where the local OCR
+    engine is not available, e.g. on Vercel). Returns (vendor, card_text).
+    """
+    mime_types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                  ".png": "image/png", ".webp": "image/webp"}
+    prompt = PROMPT.replace(
+        "The text below comes from OCR, one detected line per row. Lines may be\nslightly out of order, two-column layouts may be interleaved row by row\n(left column first), and OCR may have small mistakes.",
+        "Photos of a business card are attached (first the front, then the back if given).",
+    ).split("OCR TEXT:")[0]
+    prompt += ("\nAlso fill card_text with every piece of text printed on the card, "
+               "line by line, exactly as printed.\n")
+
+    parts = [prompt]
+    for label, path in zip(("FRONT", "BACK"), image_paths):
+        path = Path(path)
+        parts.append(f"{label} OF CARD:")
+        parts.append(types.Part.from_bytes(
+            data=path.read_bytes(),
+            mime_type=mime_types.get(path.suffix.lower(), "image/jpeg")))
+
+    data = _ask_gemini(parts, schema=VendorCardWithText)
+    card_text = (data.get("card_text") or "").strip() if isinstance(data, dict) else ""
+    vendor = validate_vendor(data)
+    if card_text:
+        vendor = check_against_ocr(vendor, card_text)
+    return vendor, card_text

@@ -1,6 +1,8 @@
 import csv
+import hmac
 import io
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -15,23 +17,65 @@ from flask import (
 from PIL import Image, ImageOps
 
 import ai_interpreter
-import scan_card
 import sheet_sync
-from ai_interpreter import AIUnavailable, interpret_vendor_text, local_extract
+from ai_interpreter import (
+    AIUnavailable, interpret_vendor_images, interpret_vendor_text, local_extract,
+)
 from dedupe import Matcher, merge_records
 from importer import TARGETS, ImportFileError, guess_target, read_rows, row_to_vendor
-from scan_card import extract_text, ocr  # OCR engine is created once, in scan_card
+# Cloud mode (Vercel): no local OCR engine - Gemini reads the card photos,
+# and data is kept in the server's temporary folder.
+CLOUD = bool(os.getenv("VERCEL")) or os.getenv("OCR_MODE", "").lower() == "gemini"
+
+if CLOUD:
+    scan_card = None
+    extract_text = ocr = None
+else:
+    import scan_card
+    from scan_card import extract_text, ocr  # OCR engine is created once, in scan_card
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
+DATA_DIR = Path(os.getenv("DATA_DIR") or ("/tmp/vendor-cards" if os.getenv("VERCEL") else BASE_DIR))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = DATA_DIR / "uploads"
 IMPORT_DIR = UPLOAD_DIR / "imports"
-DB_PATH = BASE_DIR / "vendors.db"
+DB_PATH = DATA_DIR / "vendors.db"
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 IMPORT_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = "change-this-local-development-key"
+
+
+def _secret_key():
+    """Random key kept in a local file (not uploaded to GitHub)."""
+    if os.getenv("SECRET_KEY"):
+        return os.getenv("SECRET_KEY")
+    path = DATA_DIR / ".flask_secret"
+    if not path.exists():
+        import secrets
+        path.write_text(secrets.token_hex(32), encoding="utf-8")
+    return path.read_text(encoding="utf-8").strip()
+
+
+app.secret_key = _secret_key()
+
+# Optional password for the whole app. Set APP_PASSWORD=... in the .env file
+# (needed when the app is opened over the internet, e.g. through a tunnel).
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
+
+
+@app.before_request
+def require_password():
+    if not APP_PASSWORD:
+        return None
+    auth = request.authorization
+    if auth and hmac.compare_digest((auth.password or "").encode(), APP_PASSWORD.encode()):
+        return None
+    return Response(
+        "Please sign in to Vendor Card Scanner.", 401,
+        {"WWW-Authenticate": 'Basic realm="Vendor Card Scanner", charset="UTF-8"'},
+    )
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB per upload
 
 @app.template_filter("localtime")
@@ -176,7 +220,8 @@ def apply_settings():
     model = settings["gemini_model"].strip()
     if model:
         ai_interpreter.MODELS[0] = model
-    scan_card.DET_SIDE_FAST = SCAN_QUALITY.get(settings["scan_quality"], 960)
+    if scan_card:
+        scan_card.DET_SIDE_FAST = SCAN_QUALITY.get(settings["scan_quality"], 960)
 
 
 def current_user():
@@ -371,15 +416,42 @@ def index():
 MAX_CARDS_PER_SCAN = 5
 
 
-def scan_one_card(front, back=None):
+def save_card_images(front, back=None):
+    """Save the uploaded front (and back) photos; returns their paths."""
+    paths = [prepare_image(front)]
+    if back and back.filename:
+        paths.append(prepare_image(back))
+    return paths
+
+
+def _scan_with_gemini(paths, images, start):
+    """Cloud mode: Gemini reads the photos directly."""
+    try:
+        vendor, card_text = interpret_vendor_images(paths)
+    except AIUnavailable:
+        return {"ok": False, "category": "warning",
+                "message": "The AI service is busy right now - please scan this card again in a minute."}
+    if not (vendor.get("company") or vendor.get("person_name") or vendor.get("emails")
+            or vendor.get("phone_numbers")):
+        return {"ok": False, "category": "error",
+                "message": "No details could be read. Try a clearer, well-lit photo of the card."}
+    result, vendor_id = save_vendor(vendor, card_text, "ok", images)
+    return _scan_outcome(vendor, result, "ok", vendor_id,
+                         f"Read in {time.perf_counter() - start:.0f}s.", start)
+
+
+def scan_one_card(front=None, back=None, paths=None):
     """Read one business card (front + optional back) and save it.
     Returns a dict describing the result (used by the page and the API)."""
     start = time.perf_counter()
 
-    sides = [("FRONT", prepare_image(front))]
-    if back and back.filename:
-        sides.append(("BACK", prepare_image(back)))
+    if paths is None:
+        paths = save_card_images(front, back)
+    sides = [("FRONT", paths[0])] + ([("BACK", paths[1])] if len(paths) > 1 else [])
     images = (sides[0][1].name, sides[1][1].name if len(sides) > 1 else None)
+
+    if CLOUD:
+        return _scan_with_gemini(paths, images, start)
 
     text_parts = []
     for label, path in sides:
@@ -414,8 +486,12 @@ def scan_one_card(front, back=None):
     print(json.dumps(vendor, indent=2, ensure_ascii=False))
 
     result, vendor_id = save_vendor(vendor, ocr_text, ai_status, images)
-    name = vendor.get("company") or vendor.get("person_name") or "Vendor"
     timing = f"Read in {ocr_seconds:.0f}s, interpreted in {ai_seconds:.0f}s."
+    return _scan_outcome(vendor, result, ai_status, vendor_id, timing, start)
+
+
+def _scan_outcome(vendor, result, ai_status, vendor_id, timing, start):
+    name = vendor.get("company") or vendor.get("person_name") or "Vendor"
     if result == "unchanged":
         category, message = "info", f"{name} is already saved. Nothing was changed. {timing}"
         short = "Already saved - nothing changed"
@@ -466,20 +542,65 @@ def scan():
     return render_template("scan.html", max_cards=MAX_CARDS_PER_SCAN)
 
 
+# Cards are read in the background and the page asks for the result every
+# few seconds. This avoids time-outs when the app is opened through a tunnel
+# or proxy (they cut off requests that take longer than ~100 seconds).
+_scan_jobs = {}
+_scan_jobs_lock = threading.Lock()
+
+
+def _run_scan_job(job_id, paths):
+    with app.test_request_context():
+        try:
+            outcome = scan_one_card(paths=paths)
+        except Exception as error:
+            app.logger.exception("Card scanning failed")
+            outcome = {"ok": False, "category": "error", "message": f"Scanning failed: {error}"}
+    with _scan_jobs_lock:
+        _scan_jobs[job_id] = {"done": True, "outcome": outcome, "time": time.time()}
+
+
 @app.route("/scan/card", methods=["POST"])
 def scan_card_api():
-    """Scan one card and answer with JSON (used for multi-card scanning)."""
+    """Start reading one card; answers at once with a job number."""
     front = request.files.get("front")
     back = request.files.get("back")
     if not front or not front.filename:
         return jsonify({"ok": False, "category": "error",
                         "message": "The front image of the card is missing."}), 400
     try:
-        return jsonify(scan_one_card(front, back))
+        paths = save_card_images(front, back)
     except Exception as error:
-        app.logger.exception("Card scanning failed")
         return jsonify({"ok": False, "category": "error",
-                        "message": f"Scanning failed: {error}"}), 500
+                        "message": f"Could not open the image: {error}"}), 400
+
+    if CLOUD:
+        # Serverless: no background work after the answer - read it right away
+        try:
+            return jsonify(scan_one_card(paths=paths))
+        except Exception as error:
+            app.logger.exception("Card scanning failed")
+            return jsonify({"ok": False, "category": "error", "message": f"Scanning failed: {error}"}), 500
+
+    job_id = uuid.uuid4().hex
+    with _scan_jobs_lock:
+        # forget results older than an hour
+        for old_id in [j for j, v in _scan_jobs.items() if time.time() - v["time"] > 3600]:
+            del _scan_jobs[old_id]
+        _scan_jobs[job_id] = {"done": False, "time": time.time()}
+    threading.Thread(target=_run_scan_job, args=(job_id, paths), daemon=True).start()
+    return jsonify({"job": job_id})
+
+
+@app.route("/scan/job/<job_id>")
+def scan_job_status(job_id):
+    with _scan_jobs_lock:
+        job = _scan_jobs.get(job_id)
+    if not job:
+        return jsonify({"done": True, "outcome": {
+            "ok": False, "category": "error",
+            "message": "This scan was lost (the app may have been restarted). Please scan the card again."}})
+    return jsonify({"done": job["done"], "outcome": job.get("outcome")})
 
 
 @app.route("/scan/done", methods=["POST"])
@@ -1054,7 +1175,7 @@ def layout_data():
 
 # ------------------------------------------------- Excel (Microsoft 365) sync
 
-TOKEN_CACHE = BASE_DIR / "ms_token_cache.json"
+TOKEN_CACHE = DATA_DIR / "ms_token_cache.json"
 _sync_lock = threading.Lock()
 _auth_cache = {}
 

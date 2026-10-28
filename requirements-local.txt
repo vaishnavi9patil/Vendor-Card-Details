@@ -1,0 +1,6 @@
+# Full set for running on this PC (includes the local OCR engine):
+#   pip install -r requirements-local.txt
+-r requirements.txt
+paddlepaddle==3.3.1
+paddleocr==3.7.0
+numpy==2.3.5

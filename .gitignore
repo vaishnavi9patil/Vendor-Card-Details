@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 ms_token_cache.json
+.flask_secret
 
 # ---- Company data (vendor records, card photos) ----
 vendors.db

@@ -206,7 +206,23 @@
             let outcome;
             try {
                 const response = await fetch("{{ url_for('scan_card_api') }}", { method: "POST", body: data });
-                outcome = await response.json();
+                const started_job = await response.json();
+                if (!started_job.job) {
+                    outcome = started_job;
+                } else {
+                    // The card is read in the background - ask every 2 seconds
+                    let misses = 0;
+                    while (!outcome) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        try {
+                            const s = await (await fetch("{{ url_for('scan_job_status', job_id='JOB') }}".replace("JOB", started_job.job))).json();
+                            if (s.done) outcome = s.outcome;
+                            misses = 0;
+                        } catch (e) {
+                            if (++misses > 15) outcome = { ok: false, category: "error", message: "Lost connection to the app while reading this card." };
+                        }
+                    }
+                }
             } catch (err) {
                 outcome = { ok: false, category: "error", message: "Could not reach the app: " + err };
             }
