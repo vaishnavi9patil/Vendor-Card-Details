@@ -41,7 +41,7 @@
         <div class="panel-body">
             <dl class="kv">
                 <dt>Vendor records</dt><dd>{{ info.record_count }}</dd>
-                <dt>Database file</dt><dd><code>{{ info.db_path }}</code> ({{ info.db_size | filesize }})</dd>
+                <dt>Database file</dt><dd><code>{{ info.db_path }}</code>{% if info.db_size %} ({{ info.db_size | filesize }}){% endif %}</dd>
                 <dt>Card photos</dt><dd><code>{{ info.upload_path }}</code> ({{ info.image_count }} files, {{ info.image_size | filesize }})</dd>
             </dl>
             <p class="hint" style="margin-top:12px">

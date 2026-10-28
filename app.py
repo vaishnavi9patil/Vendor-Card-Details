@@ -17,6 +17,7 @@ from flask import (
 from PIL import Image, ImageOps
 
 import ai_interpreter
+import db
 import sheet_sync
 from ai_interpreter import (
     AIUnavailable, interpret_vendor_images, interpret_vendor_text, local_extract,
@@ -40,6 +41,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
 IMPORT_DIR = UPLOAD_DIR / "imports"
 DB_PATH = DATA_DIR / "vendors.db"
+db.DB_PATH = DB_PATH          # SQLite file (used unless DATABASE_URL is set)
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 IMPORT_DIR.mkdir(exist_ok=True)
@@ -51,6 +53,11 @@ def _secret_key():
     """Random key kept in a local file (not uploaded to GitHub)."""
     if os.getenv("SECRET_KEY"):
         return os.getenv("SECRET_KEY")
+    if os.getenv("VERCEL"):
+        # Same key on every Vercel server, derived from the private settings
+        import hashlib
+        seed = (os.getenv("APP_PASSWORD", "") + os.getenv("GEMINI_API_KEY", "")).encode()
+        return hashlib.sha256(b"vendor-cards:" + seed).hexdigest()
     path = DATA_DIR / ".flask_secret"
     if not path.exists():
         import secrets
@@ -105,7 +112,7 @@ ALL_FIELDS = [
 # ------------------------------------------------------------ database
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vendors (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,7 +129,7 @@ def init_db():
             )
         """)
         # Columns added later - created automatically on older databases
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(vendors)")}
+        existing = conn.columns("vendors")
         if "other_contacts" not in existing:
             conn.execute("ALTER TABLE vendors ADD COLUMN other_contacts TEXT")
         if "updated_at" not in existing:
@@ -149,6 +156,9 @@ def init_db():
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
         )
+        # Card photos and uploaded import files, for the online version
+        # (its own disk is temporary and not shared between servers)
+        conn.execute("CREATE TABLE IF NOT EXISTS files (name TEXT PRIMARY KEY, data BLOB)")
         # Which vendors are linked to a row in the Excel sheet (see sheet_sync.py)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sheet_links (
@@ -196,14 +206,14 @@ SCAN_QUALITY = {"fast": 960, "balanced": 1280, "accurate": 1600}
 
 def get_settings():
     settings = dict(DEFAULT_SETTINGS)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         for key, value in conn.execute("SELECT key, value FROM settings"):
             settings[key] = value
     return settings
 
 
 def save_settings(values):
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         for key, value in values.items():
             if key in DEFAULT_SETTINGS:
                 conn.execute(
@@ -245,7 +255,7 @@ def _row_to_vendor(row):
 
 
 def get_vendor(vendor_id):
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
     return _row_to_vendor(row) if row else None
@@ -330,7 +340,7 @@ def save_vendor(vendor, ocr_text="", ai_status="ok", images=(None, None),
     person. Returns (result, vendor_id); result is 'added', 'updated' or
     'unchanged'."""
     front_image, back_image = images
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         existing = find_existing_vendor(conn, vendor)
 
         if existing:
@@ -369,7 +379,7 @@ def get_vendors(search="", status="", source=""):
 
 
 def _query_vendors(search=""):
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         conn.row_factory = sqlite3.Row
         if search:
             pattern = f"%{search}%"
@@ -385,13 +395,44 @@ def _query_vendors(search=""):
 
 # ------------------------------------------------------------- images
 
+def store_file(name, path):
+    """Online version: keep a copy of a file in the database."""
+    if db.IS_POSTGRES:
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO files (name, data) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET data = excluded.data",
+                (name, Path(path).read_bytes()),
+            )
+
+
+def restore_file(name, path):
+    """Online version: bring a stored file back to this server's disk."""
+    if not db.IS_POSTGRES:
+        return False
+    with db.connect() as conn:
+        row = conn.execute("SELECT data FROM files WHERE name = ?", (name,)).fetchone()
+    if not row:
+        return False
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_bytes(bytes(row[0]))
+    return True
+
+
+def forget_files(prefix):
+    if db.IS_POSTGRES:
+        with db.connect() as conn:
+            conn.execute("DELETE FROM files WHERE name LIKE ?", (prefix + "%",))
+
+
 def prepare_image(file_storage):
     """Save an upright, resized copy of the upload and return its path."""
     destination = UPLOAD_DIR / f"{uuid.uuid4().hex}.jpg"
     with Image.open(file_storage.stream) as original:
         image = ImageOps.exif_transpose(original).convert("RGB")
         image.thumbnail((2000, 2000))
-        image.save(destination, "JPEG", quality=92)
+        image.save(destination, "JPEG", quality=88 if db.IS_POSTGRES else 92)
+    store_file(f"cards/{destination.name}", destination)
     return destination
 
 
@@ -639,7 +680,7 @@ def vendor_detail(vendor_id):
                 edited[field] = _lines(field)
             else:
                 edited[field] = " ".join(request.form.get(field, "").split())
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             # A person checked it, so it no longer waits for the AI
             ai_status = "manual" if vendor["ai_status"] == "pending" else (vendor["ai_status"] or "ok")
             update_vendor(conn, vendor_id, edited, vendor["ocr_text"], ai_status)
@@ -679,7 +720,7 @@ def vendor_new():
 def vendor_delete(vendor_id):
     vendor = get_vendor(vendor_id)
     if vendor:
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             conn.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
             conn.execute("UPDATE sheet_links SET deleted = 1 WHERE vendor_id = ?", (vendor_id,))
         flash(f"{vendor['company'] or 'Vendor'} was deleted.", "info")
@@ -688,6 +729,10 @@ def vendor_delete(vendor_id):
 
 @app.route("/cards/<path:filename>")
 def card_image(filename):
+    if not (UPLOAD_DIR / filename).is_file():
+        safe = Path(filename).name
+        if safe != filename or not restore_file(f"cards/{safe}", UPLOAD_DIR / safe):
+            abort(404)
     return send_from_directory(UPLOAD_DIR, filename)
 
 
@@ -905,6 +950,8 @@ def import_page():
             return redirect(url_for("import_page"))
 
         (IMPORT_DIR / f"{token}.name").write_text(upload.filename, encoding="utf-8")
+        store_file(f"imports/{token}{suffix}", path)
+        store_file(f"imports/{token}.name", IMPORT_DIR / f"{token}.name")
         return redirect(url_for("import_preview", token=token))
 
     return render_template("import.html")
@@ -916,6 +963,11 @@ def _import_file(token):
     for path in IMPORT_DIR.glob(f"{token}.*"):
         if path.suffix != ".name":
             return path
+    # Online version: the file may have been uploaded through another server
+    for suffix in (".xlsx", ".xlsm", ".csv", ".txt"):
+        if restore_file(f"imports/{token}{suffix}", IMPORT_DIR / f"{token}{suffix}"):
+            restore_file(f"imports/{token}.name", IMPORT_DIR / f"{token}.name")
+            return IMPORT_DIR / f"{token}{suffix}"
     return None
 
 
@@ -999,7 +1051,7 @@ def run_import(headers, rows, mapping, actions, merge_mode, mark_reviewed):
                 reviewed = existing.get("reviewed") or 0
             else:
                 reviewed = 0
-            with sqlite3.connect(DB_PATH) as conn:
+            with db.connect() as conn:
                 update_vendor(conn, vendor_id, merged, existing.get("ocr_text") or "",
                               existing.get("ai_status") or "import")
                 conn.execute("UPDATE vendors SET reviewed = ? WHERE id = ?",
@@ -1008,7 +1060,7 @@ def run_import(headers, rows, mapping, actions, merge_mode, mark_reviewed):
             result["merged"] += 1
             continue
 
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             cursor = conn.execute(
                 f"INSERT INTO vendors ({', '.join(ALL_FIELDS)}, ocr_text, ai_status, "
                 "reviewed, source, created_by) "
@@ -1055,6 +1107,7 @@ def import_preview(token):
                                 request.form.get("mark_reviewed") == "1")
 
             filename = _original_name(token)
+            forget_files(f"imports/{token}")
             for leftover in IMPORT_DIR.glob(f"{token}.*"):
                 leftover.unlink(missing_ok=True)
             return render_template("import_done.html", filename=filename,
@@ -1122,13 +1175,13 @@ def settings_page():
 
     import os
     key = os.getenv("GEMINI_API_KEY") or ""
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         record_count = conn.execute("SELECT COUNT(*) FROM vendors").fetchone()[0]
     images = [p for p in UPLOAD_DIR.glob("*.jpg")]
     info = {
         "api_key": ("•••• " + key[-4:]) if len(key) > 8 else "",
-        "db_path": str(DB_PATH),
-        "db_size": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "db_path": "Online database (Postgres)" if db.IS_POSTGRES else str(DB_PATH),
+        "db_size": 0 if db.IS_POSTGRES else (DB_PATH.stat().st_size if DB_PATH.exists() else 0),
         "upload_path": str(UPLOAD_DIR),
         "image_count": len(images),
         "image_size": sum(p.stat().st_size for p in images),
@@ -1141,8 +1194,10 @@ def settings_page():
 @app.route("/settings/backup")
 def download_backup():
     """Download a copy of the database (safe to do while the app runs)."""
-    with sqlite3.connect(DB_PATH) as conn:
-        data = conn.serialize()
+    data = db.backup_bytes()
+    if data is None:
+        # Online database: the Excel download contains every vendor
+        return redirect(url_for("export_xlsx"))
     filename = f"vendors_backup_{datetime.now():%Y-%m-%d_%H%M}.db"
     return Response(
         data, mimetype="application/octet-stream",
@@ -1162,7 +1217,7 @@ def filesize(num):
 def layout_data():
     """Values every page needs for the sidebar."""
     settings = get_settings()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM vendors").fetchone()[0]
         to_review = conn.execute(
             "SELECT COUNT(*) FROM vendors WHERE COALESCE(reviewed, 0) = 0"
@@ -1197,7 +1252,7 @@ class VendorStore:
         return get_vendors()
 
     def insert(self, vendor):
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             cursor = conn.execute(
                 f"INSERT INTO vendors ({', '.join(ALL_FIELDS)}, ocr_text, ai_status, "
                 "reviewed, source) "
@@ -1211,17 +1266,17 @@ class VendorStore:
         if not existing:
             return
         merged = {f: vendor.get(f, existing.get(f)) for f in ALL_FIELDS}
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             update_vendor(conn, vendor_id, merged, existing.get("ocr_text") or "",
                           existing.get("ai_status") or "ok")
 
     def links(self):
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             conn.row_factory = sqlite3.Row
             return {row["vendor_id"]: dict(row) for row in conn.execute("SELECT * FROM sheet_links")}
 
     def set_link(self, vendor_id, app_hash, sheet_hash):
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             conn.execute(
                 "INSERT INTO sheet_links (vendor_id, app_hash, sheet_hash, deleted, removed, synced_at) "
                 "VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP) "
@@ -1232,7 +1287,7 @@ class VendorStore:
             )
 
     def mark_removed(self, vendor_id):
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             conn.execute("UPDATE sheet_links SET removed = 1 WHERE vendor_id = ?", (vendor_id,))
 
 
@@ -1329,7 +1384,7 @@ def sync_page():
     next_run = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if settings["sync_last_auto_date"] == now.strftime("%Y-%m-%d") or now >= next_run:
         next_run = next_run + timedelta(days=1)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         linked = conn.execute("SELECT COUNT(*) FROM sheet_links WHERE deleted = 0").fetchone()[0]
     return render_template(
         "sync.html", settings=settings, account=account, last=last, msal_ok=msal_ok,
@@ -1373,7 +1428,7 @@ def sync_run():
 @app.route("/retry/<int:vendor_id>", methods=["POST"])
 def retry_ai(vendor_id):
     """Re-run Gemini on the saved OCR text (no new scan needed)."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with db.connect() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
 
@@ -1384,7 +1439,7 @@ def retry_ai(vendor_id):
     try:
         start = time.perf_counter()
         vendor = interpret_vendor_text(row["ocr_text"])
-        with sqlite3.connect(DB_PATH) as conn:
+        with db.connect() as conn:
             update_vendor(conn, vendor_id, vendor, row["ocr_text"], "ok")
         name = vendor.get("company") or vendor.get("person_name") or "Vendor"
         flash(f"{name}: AI details added ({time.perf_counter() - start:.0f}s). "
